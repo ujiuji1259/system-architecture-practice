@@ -1,0 +1,8 @@
+bin/
+*.db
+coverage.out
+.git
+.golangci.yaml
+Makefile
+README.md
+**/*_test.go

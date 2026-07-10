@@ -1,0 +1,26 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    environment:
+      ADDR: ":8080"
+      DB_PATH: "/data/twitter.db"
+      REDIS_ADDR: "redis:6379"
+      FANOUT_CELEBRITY_THRESHOLD: "10000"
+      FANOUT_WORKERS: "4"
+      TIMELINE_MAX_LEN: "800"
+      MACHINE_ID: "1"
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy

@@ -1,0 +1,299 @@
+openapi: 3.0.3
+info:
+  title: Mini Twitter API
+  description: A scale-oriented Twitter-like service focused on home-timeline fan-out.
+  version: 0.1.0
+servers:
+  - url: /api/v1
+paths:
+  /users:
+    post:
+      operationId: createUser
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Handle already in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getUser
+      summary: Get a user by id
+      responses:
+        "200":
+          description: The user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /users/{id}/following/{targetId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The acting user.
+        schema:
+          type: string
+      - name: targetId
+        in: path
+        required: true
+        description: The user to follow / unfollow.
+        schema:
+          type: string
+    put:
+      operationId: follow
+      summary: User {id} follows {targetId}
+      responses:
+        "204":
+          description: Following (idempotent)
+        "400":
+          description: Invalid request (e.g. self-follow)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: A user does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      operationId: unfollow
+      summary: User {id} unfollows {targetId}
+      responses:
+        "204":
+          description: Not following (idempotent)
+        "404":
+          description: A user does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /users/{id}/tweets:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - $ref: "#/components/parameters/BeforeId"
+      - $ref: "#/components/parameters/Limit"
+    get:
+      operationId: listUserTweets
+      summary: A user's own tweets, newest first (pull)
+      responses:
+        "200":
+          description: A page of tweets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TweetList"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /tweets:
+    post:
+      operationId: createTweet
+      summary: Post a tweet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTweetRequest"
+      responses:
+        "201":
+          description: Tweet created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Tweet"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Author does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /timelines/home:
+    get:
+      operationId: getHomeTimeline
+      summary: Home timeline for a user (hybrid fan-out)
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/BeforeId"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A page of the home timeline
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TweetList"
+        "404":
+          description: User does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  parameters:
+    BeforeId:
+      name: before_id
+      in: query
+      required: false
+      description: Keyset cursor; return tweets with id strictly less than this.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  schemas:
+    CreateUserRequest:
+      type: object
+      required:
+        - handle
+      properties:
+        handle:
+          type: string
+          pattern: "^[A-Za-z0-9_]{1,15}$"
+          example: jack
+        display_name:
+          type: string
+          example: Jack
+    User:
+      type: object
+      required:
+        - id
+        - handle
+        - display_name
+        - follower_count
+        - created_at
+      properties:
+        id:
+          type: string
+          description: Snowflake id (string to avoid JS precision loss).
+          example: "1780500000000000001"
+        handle:
+          type: string
+          example: jack
+        display_name:
+          type: string
+          example: Jack
+        follower_count:
+          type: integer
+          format: int64
+          example: 42
+        created_at:
+          type: string
+          format: date-time
+    CreateTweetRequest:
+      type: object
+      required:
+        - author_id
+        - text
+      properties:
+        author_id:
+          type: string
+          example: "1780500000000000001"
+        text:
+          type: string
+          minLength: 1
+          maxLength: 280
+          example: hello world
+    Tweet:
+      type: object
+      required:
+        - id
+        - author_id
+        - author_handle
+        - text
+        - created_at
+      properties:
+        id:
+          type: string
+          example: "1780500000000000123"
+        author_id:
+          type: string
+          example: "1780500000000000001"
+        author_handle:
+          type: string
+          example: jack
+        text:
+          type: string
+          example: hello world
+        created_at:
+          type: string
+          format: date-time
+    TweetList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tweet"
+        next_cursor:
+          type: string
+          description: Pass as before_id to fetch the next (older) page. Absent when there is no more.
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+        code:
+          type: string

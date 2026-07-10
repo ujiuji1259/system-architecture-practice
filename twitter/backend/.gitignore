@@ -1,0 +1,8 @@
+# build artifacts
+/bin/
+# local SQLite databases
+*.db
+*.db-shm
+*.db-wal
+# coverage output
+coverage.out
