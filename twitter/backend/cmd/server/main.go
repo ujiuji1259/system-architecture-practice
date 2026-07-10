@@ -23,11 +23,11 @@ import (
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/fanout"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/handler"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline"
+	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline/store"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/rediscache"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/repository"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/service"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/snowflake"
-	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/timeline"
 )
 
 // tweetCacheTTL bounds how long a hydrated tweet body lives in Redis.
@@ -76,7 +76,7 @@ func run() error {
 	// One CelebrityPolicy, shared by the projection (write + rebuild) and the
 	// service (read-time celebrity pull), so all three agree on the cut point.
 	policy := hometimeline.CelebrityPolicy{Threshold: *threshold}
-	projection := hometimeline.New(repo, deps.timeline, hometimeline.Config{Policy: policy, MaxLen: *maxLen})
+	projection := hometimeline.New(repo, deps.store, hometimeline.Config{Policy: policy, MaxLen: *maxLen})
 
 	gen := snowflake.New(*machineID)
 	svc := service.New(repo, projection, deps.bus, gen)
@@ -117,15 +117,6 @@ func run() error {
 	}
 }
 
-// timelineStore is the union of timeline behaviors used across the app: the
-// service reads it (Range), while the projection writes it (PushMany on fan-out,
-// Fill on rebuild).
-type timelineStore interface {
-	PushMany(ctx context.Context, userIDs []int64, tweetID int64) error
-	Fill(ctx context.Context, userID int64, tweetIDs []int64) error
-	Range(ctx context.Context, userID, beforeID int64, limit int) ([]int64, error)
-}
-
 // eventBus is the union of event behaviors: the command publishes (Publish) and
 // the projector subscribes (Poll). One instance serves both.
 type eventBus interface {
@@ -136,7 +127,7 @@ type eventBus interface {
 // deps bundles the swappable derived-data backends (Redis or in-memory).
 type deps struct {
 	tweetCache repository.TweetCache
-	timeline   timelineStore
+	store      store.Store
 	bus        eventBus
 }
 
@@ -148,7 +139,7 @@ func newDeps(ctx context.Context, redisAddr string, maxLen int, ttl time.Duratio
 		slog.Info("using in-memory timeline, event bus and tweet cache")
 		return deps{
 			tweetCache: repository.NewMemoryCache(),
-			timeline:   timeline.NewMemory(maxLen),
+			store:      store.NewMemory(maxLen),
 			bus:        events.NewMemoryBus(0),
 		}, func() {}, nil
 	}
@@ -163,7 +154,7 @@ func newDeps(ctx context.Context, redisAddr string, maxLen int, ttl time.Duratio
 	slog.Info("using redis timeline, event bus and tweet cache", "addr", redisAddr)
 	return deps{
 		tweetCache: rediscache.New(rdb, tweetCacheTTL),
-		timeline:   timeline.NewRedis(rdb, maxLen, ttl),
+		store:      store.NewRedis(rdb, maxLen, ttl),
 		bus:        events.NewRedisBus(rdb, 0),
 	}, func() { _ = rdb.Close() }, nil
 }

@@ -1,4 +1,4 @@
-package timeline
+package store
 
 import (
 	"context"

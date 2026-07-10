@@ -10,9 +10,9 @@ import (
 
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/events"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline"
+	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline/store"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/repository"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/snowflake"
-	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/timeline"
 )
 
 // BenchmarkHomeTimelineRead contrasts the two ways to build a home timeline as
@@ -56,7 +56,7 @@ func BenchmarkHomeTimelineRead(b *testing.B) {
 // seedHome builds a repository with `followees` authors (each posting
 // tweetsPer tweets), a user `me` who follows them all, and a materialized
 // timeline already fanned out to `me`.
-func seedHome(b *testing.B, followees, tweetsPer int) (*repository.SQLite, *timeline.Memory, int64, []int64) {
+func seedHome(b *testing.B, followees, tweetsPer int) (*repository.SQLite, *store.Memory, int64, []int64) {
 	b.Helper()
 	ctx := context.Background()
 	dsn := filepath.Join(b.TempDir(), "bench.db")
@@ -66,7 +66,7 @@ func seedHome(b *testing.B, followees, tweetsPer int) (*repository.SQLite, *time
 	}
 	b.Cleanup(func() { _ = repo.Close() })
 
-	tl := timeline.NewMemory(800)
+	tl := store.NewMemory(800)
 	gen := snowflake.New(1)
 
 	const me = int64(1)
@@ -133,7 +133,7 @@ func BenchmarkHomeTimelineReadByCelebrityRatio(b *testing.B) {
 // celebrities (materialized nowhere, pulled at read) and the rest are
 // materialized into me's timeline. Celebrities are pushed over the threshold by
 // a second follower (a dummy user), since me's own follow only counts as one.
-func seedByRatio(b *testing.B, followees, tweetsPer, celebPct int, threshold int64) (*repository.SQLite, *timeline.Memory, int64) {
+func seedByRatio(b *testing.B, followees, tweetsPer, celebPct int, threshold int64) (*repository.SQLite, *store.Memory, int64) {
 	b.Helper()
 	ctx := context.Background()
 	dsn := filepath.Join(b.TempDir(), "ratio.db")
@@ -143,7 +143,7 @@ func seedByRatio(b *testing.B, followees, tweetsPer, celebPct int, threshold int
 	}
 	b.Cleanup(func() { _ = repo.Close() })
 
-	tl := timeline.NewMemory(800)
+	tl := store.NewMemory(800)
 	gen := snowflake.New(1)
 
 	const me, dummy = int64(1), int64(2)

@@ -1,10 +1,9 @@
-// Package timeline stores materialized home timelines: for each user, a bounded
-// list of the newest tweet ids from the accounts they follow (celebrities
-// excluded — those are pulled at read time). It is the write-time fan-out target
-// and the read-time fast path.
-//
-// From the service's point of view a Store is just another data source that
-// returns tweet ids; whether it is Redis or in-memory is not its concern.
+// Package store is the storage backend for the home-timeline projection
+// (internal/hometimeline). For each user it holds a bounded list of the newest
+// tweet ids from their non-celebrity followees — the write-time fan-out target
+// and the read-time fast path. It is a dumb id container: it knows nothing
+// about tweets, the follow graph, or how a home timeline is defined; that lives
+// in the projection above it.
 //
 // # Why lexicographic ordering, not scores
 //
@@ -14,7 +13,7 @@
 // give every member the same score and order by the member itself: a
 // zero-padded, fixed-width decimal id, whose lexicographic order equals numeric
 // order. Ranges then use ZRANGEBYLEX and stay exact.
-package timeline
+package store
 
 import (
 	"context"
@@ -30,9 +29,9 @@ import (
 // sort lexicographically the same as numerically.
 const idWidth = 19
 
-// Store is a materialized-timeline store. It is a dumb id container: it knows
-// nothing about tweets, the follow graph, or how a timeline is defined — that is
-// the projection's concern (see internal/hometimeline).
+// Store is the materialized-timeline id container the projection reads and
+// writes. Callers refer to it as store.Store (or hometimeline.Store via the
+// projection's structural interface).
 type Store interface {
 	// Push adds tweetID to userID's timeline, trimming to the max length.
 	Push(ctx context.Context, userID, tweetID int64) error

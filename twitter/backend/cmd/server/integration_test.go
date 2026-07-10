@@ -14,10 +14,10 @@ import (
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/events"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/fanout"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline"
+	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline/store"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/repository"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/service"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/snowflake"
-	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/timeline"
 )
 
 // newTestServer wires the full stack (SQLite + in-memory timeline/queue/cache +
@@ -32,10 +32,10 @@ func newTestServer(t *testing.T, threshold int64) *httptest.Server {
 	}
 	t.Cleanup(func() { _ = repo.Close() })
 
-	tl := timeline.NewMemory(800)
+	tls := store.NewMemory(800)
 	bus := events.NewMemoryBus(0)
 	policy := hometimeline.CelebrityPolicy{Threshold: threshold}
-	projection := hometimeline.New(repo, tl, hometimeline.Config{Policy: policy, MaxLen: 800})
+	projection := hometimeline.New(repo, tls, hometimeline.Config{Policy: policy, MaxLen: 800})
 	svc := service.New(repo, projection, bus, snowflake.New(1))
 
 	worker := fanout.NewWorker(bus, projection)
