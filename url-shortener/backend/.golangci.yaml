@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - revive
+    - misspell
+    - unconvert
+  exclusions:
+    rules:
+      # Generated code should not be linted.
+      - path: api/gen.go
+        linters:
+          - revive
+          - staticcheck
+          - unused
+      - path: internal/repository/dbgen/
+        linters:
+          - revive
+          - staticcheck
+          - unused
