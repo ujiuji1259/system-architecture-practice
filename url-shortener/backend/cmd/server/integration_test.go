@@ -89,8 +89,16 @@ func TestIntegration_Lifecycle(t *testing.T) {
 		t.Errorf("visit_count = %d, want 0", created.VisitCount)
 	}
 
-	// redirect: 302 to the target, counted as a visit
-	resp = doJSON(t, http.MethodGet, srv.URL+"/"+created.Code, "")
+	// redirect: 302 to the target, recorded as an access event
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/"+created.Code, nil)
+	req.Header.Set("Referer", "https://news.example/post")
+	req.Header.Set("User-Agent", "itest-agent/1.0")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("redirect request: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("redirect status = %d, want 302", resp.StatusCode)
 	}
@@ -98,13 +106,29 @@ func TestIntegration_Lifecycle(t *testing.T) {
 		t.Errorf("Location = %q, want the target URL", loc)
 	}
 
-	// get reflects the incremented visit count
+	// get reflects the derived visit count
 	resp = doJSON(t, http.MethodGet, srv.URL+"/api/v1/links/"+created.Code, "")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get status = %d, want 200", resp.StatusCode)
 	}
 	if got := decodeLink(t, resp); got.VisitCount != 1 {
 		t.Errorf("visit_count = %d, want 1", got.VisitCount)
+	}
+
+	// events endpoint returns the recorded access with its metadata
+	resp = doJSON(t, http.MethodGet, srv.URL+"/api/v1/links/"+created.Code+"/events", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("events status = %d, want 200", resp.StatusCode)
+	}
+	var events api.EventList
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	if events.Total != 1 || len(events.Items) != 1 {
+		t.Fatalf("events total=%d len=%d, want 1/1", events.Total, len(events.Items))
+	}
+	if ev := events.Items[0]; ev.Referer != "https://news.example/post" || ev.UserAgent != "itest-agent/1.0" {
+		t.Errorf("event = %+v, want referer/user-agent captured", ev)
 	}
 
 	// list contains the single link

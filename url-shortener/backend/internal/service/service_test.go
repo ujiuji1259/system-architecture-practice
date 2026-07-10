@@ -10,7 +10,8 @@ import (
 
 // fakeRepo is an in-memory Repository with programmable failures.
 type fakeRepo struct {
-	links map[string]repository.Link
+	links  map[string]repository.Link
+	events map[string][]repository.Event
 	// failCreates causes the next N Create calls to return ErrCodeExists,
 	// simulating short-code collisions.
 	failCreates int
@@ -18,7 +19,10 @@ type fakeRepo struct {
 }
 
 func newFakeRepo() *fakeRepo {
-	return &fakeRepo{links: make(map[string]repository.Link)}
+	return &fakeRepo{
+		links:  make(map[string]repository.Link),
+		events: make(map[string][]repository.Event),
+	}
 }
 
 func (f *fakeRepo) Create(_ context.Context, l repository.Link) error {
@@ -66,14 +70,26 @@ func (f *fakeRepo) Delete(_ context.Context, code string) error {
 	return nil
 }
 
-func (f *fakeRepo) GetAndCountVisit(_ context.Context, code string) (repository.Link, error) {
+func (f *fakeRepo) RecordVisit(_ context.Context, code string, ev repository.Event) (string, error) {
 	l, ok := f.links[code]
 	if !ok {
-		return repository.Link{}, repository.ErrNotFound
+		return "", repository.ErrNotFound
 	}
-	l.VisitCount++
-	f.links[code] = l
-	return l, nil
+	f.events[code] = append(f.events[code], ev)
+	return l.URL, nil
+}
+
+func (f *fakeRepo) ListEvents(_ context.Context, code string, limit, offset int) ([]repository.Event, int64, error) {
+	all := f.events[code]
+	total := int64(len(all))
+	if offset > len(all) {
+		offset = len(all)
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return all[offset:end], total, nil
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -254,23 +270,48 @@ func TestDelete(t *testing.T) {
 	}
 }
 
-func TestResolveCountsVisit(t *testing.T) {
+func TestResolveRecordsEvent(t *testing.T) {
 	fr := newFakeRepo()
 	fr.links["hit"] = repository.Link{Code: "hit", URL: "https://x.example"}
 	svc := New(fr)
 
-	link, err := svc.Resolve(context.Background(), "hit")
+	url, err := svc.Resolve(context.Background(), "hit", "https://ref.example", "curl/8")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if link.URL != "https://x.example" {
-		t.Errorf("URL = %q", link.URL)
+	if url != "https://x.example" {
+		t.Errorf("url = %q, want the target URL", url)
 	}
-	if link.VisitCount != 1 {
-		t.Errorf("VisitCount = %d, want 1", link.VisitCount)
+	got := fr.events["hit"]
+	if len(got) != 1 || got[0].Referer != "https://ref.example" || got[0].UserAgent != "curl/8" {
+		t.Errorf("recorded events = %+v, want one with the referer/user-agent", got)
 	}
 
-	if _, err := svc.Resolve(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
+	if _, err := svc.Resolve(context.Background(), "nope", "", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Resolve missing err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListEvents(t *testing.T) {
+	fr := newFakeRepo()
+	fr.links["hit"] = repository.Link{Code: "hit", URL: "https://x.example"}
+	svc := New(fr)
+
+	// Missing link is distinguishable from a link with no events.
+	if _, _, err := svc.ListEvents(context.Background(), "nope", 20, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ListEvents missing err = %v, want ErrNotFound", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if _, err := svc.Resolve(context.Background(), "hit", "", ""); err != nil {
+			t.Fatalf("Resolve: %v", err)
+		}
+	}
+	events, total, err := svc.ListEvents(context.Background(), "hit", 20, 0)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if total != 2 || len(events) != 2 {
+		t.Errorf("total=%d len=%d, want 2/2", total, len(events))
 	}
 }

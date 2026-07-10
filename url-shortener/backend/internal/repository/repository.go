@@ -1,9 +1,11 @@
-// Package repository provides persistence for shortened links.
+// Package repository provides persistence for shortened links and their
+// access events.
 //
 // SQL lives in internal/repository/queries and is compiled into type-safe Go by
 // sqlc (see sqlc.yaml). This file adapts that generated code to the domain
-// model, mapping driver errors to sentinel errors and converting the TEXT
-// created_at column to time.Time.
+// model, mapping driver errors to sentinel errors and converting TEXT timestamp
+// columns to time.Time. The visit count is derived by counting access events,
+// so there is a single source of truth.
 package repository
 
 import (
@@ -28,7 +30,7 @@ var (
 	ErrCodeExists = errors.New("code already exists")
 )
 
-// timeLayout is how created_at is stored in the TEXT column.
+// timeLayout is how timestamps are stored in TEXT columns.
 const timeLayout = time.RFC3339Nano
 
 // Link is the domain representation of a shortened URL.
@@ -39,7 +41,15 @@ type Link struct {
 	CreatedAt  time.Time
 }
 
-// SQLite is a SQLite-backed link repository built on sqlc-generated queries.
+// Event is a single access to a shortened link.
+type Event struct {
+	Code       string
+	AccessedAt time.Time
+	Referer    string
+	UserAgent  string
+}
+
+// SQLite is a SQLite-backed repository built on sqlc-generated queries.
 type SQLite struct {
 	db *sql.DB
 	q  *dbgen.Queries
@@ -53,6 +63,11 @@ func New(ctx context.Context, dsn string) (*SQLite, error) {
 	}
 	// SQLite handles concurrent writes poorly; keep a single connection.
 	database.SetMaxOpenConns(1)
+	// Enforce foreign keys so ON DELETE CASCADE removes a link's events.
+	if _, err := database.ExecContext(ctx, `PRAGMA foreign_keys = ON;`); err != nil {
+		_ = database.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 	if _, err := database.ExecContext(ctx, dbpkg.Schema); err != nil {
 		_ = database.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -66,10 +81,9 @@ func (s *SQLite) Close() error { return s.db.Close() }
 // Create inserts a new link. It returns ErrCodeExists if the code is taken.
 func (s *SQLite) Create(ctx context.Context, l Link) error {
 	err := s.q.CreateLink(ctx, dbgen.CreateLinkParams{
-		Code:       l.Code,
-		Url:        l.URL,
-		VisitCount: l.VisitCount,
-		CreatedAt:  l.CreatedAt.UTC().Format(timeLayout),
+		Code:      l.Code,
+		Url:       l.URL,
+		CreatedAt: l.CreatedAt.UTC().Format(timeLayout),
 	})
 	var sqliteErr *sqlite.Error
 	if errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY {
@@ -84,14 +98,13 @@ func (s *SQLite) Create(ctx context.Context, l Link) error {
 // Get returns the link for a code, or ErrNotFound.
 func (s *SQLite) Get(ctx context.Context, code string) (Link, error) {
 	row, err := s.q.GetLink(ctx, code)
-	return toDomain(row, err)
-}
-
-// GetAndCountVisit atomically increments the visit count and returns the link.
-// It returns ErrNotFound if the code does not exist.
-func (s *SQLite) GetAndCountVisit(ctx context.Context, code string) (Link, error) {
-	row, err := s.q.CountVisit(ctx, code)
-	return toDomain(row, err)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Link{}, ErrNotFound
+	}
+	if err != nil {
+		return Link{}, fmt.Errorf("get link: %w", err)
+	}
+	return toLink(row.Code, row.Url, row.CreatedAt, row.VisitCount)
 }
 
 // List returns a page of links ordered by newest first, plus the total count.
@@ -109,7 +122,7 @@ func (s *SQLite) List(ctx context.Context, limit, offset int) ([]Link, int64, er
 	}
 	links := make([]Link, len(rows))
 	for i, r := range rows {
-		l, err := fromRow(r)
+		l, err := toLink(r.Code, r.Url, r.CreatedAt, r.VisitCount)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -119,6 +132,7 @@ func (s *SQLite) List(ctx context.Context, limit, offset int) ([]Link, int64, er
 }
 
 // Delete removes a link by code. It returns ErrNotFound if it did not exist.
+// Associated events are removed by the ON DELETE CASCADE constraint.
 func (s *SQLite) Delete(ctx context.Context, code string) error {
 	n, err := s.q.DeleteLink(ctx, code)
 	if err != nil {
@@ -130,27 +144,74 @@ func (s *SQLite) Delete(ctx context.Context, code string) error {
 	return nil
 }
 
-// toDomain maps a single-row query result (and its error) to the domain model.
-func toDomain(r dbgen.Link, err error) (Link, error) {
+// RecordVisit records an access event for a code and returns the target URL.
+// The lookup and insert run in one transaction. Returns ErrNotFound if the
+// code does not exist.
+func (s *SQLite) RecordVisit(ctx context.Context, code string, ev Event) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	q := s.q.WithTx(tx)
+
+	url, err := q.GetLinkURL(ctx, code)
 	if errors.Is(err, sql.ErrNoRows) {
-		return Link{}, ErrNotFound
+		return "", ErrNotFound
 	}
 	if err != nil {
-		return Link{}, fmt.Errorf("query link: %w", err)
+		return "", fmt.Errorf("get link url: %w", err)
 	}
-	return fromRow(r)
+	if err := q.InsertEvent(ctx, dbgen.InsertEventParams{
+		Code:       code,
+		AccessedAt: ev.AccessedAt.UTC().Format(timeLayout),
+		Referer:    ev.Referer,
+		UserAgent:  ev.UserAgent,
+	}); err != nil {
+		return "", fmt.Errorf("insert event: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit: %w", err)
+	}
+	return url, nil
 }
 
-// fromRow converts a generated row into a domain Link, parsing created_at.
-func fromRow(r dbgen.Link) (Link, error) {
-	t, err := time.Parse(timeLayout, r.CreatedAt)
+// ListEvents returns a page of access events for a code, newest first, plus the
+// total count. It does not distinguish a missing link from one with no events.
+func (s *SQLite) ListEvents(ctx context.Context, code string, limit, offset int) ([]Event, int64, error) {
+	total, err := s.q.CountEvents(ctx, code)
+	if err != nil {
+		return nil, 0, fmt.Errorf("count events: %w", err)
+	}
+	rows, err := s.q.ListEvents(ctx, dbgen.ListEventsParams{
+		Code:   code,
+		Limit:  int64(limit),
+		Offset: int64(offset),
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list events: %w", err)
+	}
+	events := make([]Event, len(rows))
+	for i, r := range rows {
+		t, err := time.Parse(timeLayout, r.AccessedAt)
+		if err != nil {
+			return nil, 0, fmt.Errorf("parse accessed_at: %w", err)
+		}
+		events[i] = Event{
+			Code:       r.Code,
+			AccessedAt: t,
+			Referer:    r.Referer,
+			UserAgent:  r.UserAgent,
+		}
+	}
+	return events, total, nil
+}
+
+// toLink builds a domain Link, parsing the TEXT created_at column.
+func toLink(code, url, createdAt string, visitCount int64) (Link, error) {
+	t, err := time.Parse(timeLayout, createdAt)
 	if err != nil {
 		return Link{}, fmt.Errorf("parse created_at: %w", err)
 	}
-	return Link{
-		Code:       r.Code,
-		URL:        r.Url,
-		VisitCount: r.VisitCount,
-		CreatedAt:  t,
-	}, nil
+	return Link{Code: code, URL: url, VisitCount: visitCount, CreatedAt: t}, nil
 }

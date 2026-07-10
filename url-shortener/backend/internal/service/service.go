@@ -39,7 +39,8 @@ type Repository interface {
 	Get(ctx context.Context, code string) (repository.Link, error)
 	List(ctx context.Context, limit, offset int) ([]repository.Link, int64, error)
 	Delete(ctx context.Context, code string) error
-	GetAndCountVisit(ctx context.Context, code string) (repository.Link, error)
+	RecordVisit(ctx context.Context, code string, ev repository.Event) (string, error)
+	ListEvents(ctx context.Context, code string, limit, offset int) ([]repository.Event, int64, error)
 }
 
 // LinkService implements the shortening use cases over a Repository.
@@ -116,14 +117,32 @@ func (s *LinkService) Delete(ctx context.Context, code string) error {
 	return err
 }
 
-// Resolve returns the target link for a code and counts the visit. It is used
-// by the redirect endpoint. Returns ErrNotFound if the code does not exist.
-func (s *LinkService) Resolve(ctx context.Context, code string) (repository.Link, error) {
-	link, err := s.repo.GetAndCountVisit(ctx, code)
+// Resolve records an access event and returns the target URL for a code. It is
+// used by the redirect endpoint. Returns ErrNotFound if the code does not exist.
+func (s *LinkService) Resolve(ctx context.Context, code, referer, userAgent string) (string, error) {
+	url, err := s.repo.RecordVisit(ctx, code, repository.Event{
+		Code:       code,
+		AccessedAt: time.Now(),
+		Referer:    referer,
+		UserAgent:  userAgent,
+	})
 	if errors.Is(err, repository.ErrNotFound) {
-		return repository.Link{}, ErrNotFound
+		return "", ErrNotFound
 	}
-	return link, err
+	return url, err
+}
+
+// ListEvents returns a page of access events for a code. It returns ErrNotFound
+// if the link does not exist (distinct from a link that simply has no events).
+func (s *LinkService) ListEvents(ctx context.Context, code string, limit, offset int) ([]repository.Event, int64, error) {
+	_, err := s.repo.Get(ctx, code)
+	if errors.Is(err, repository.ErrNotFound) {
+		return nil, 0, ErrNotFound
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.repo.ListEvents(ctx, code, limit, offset)
 }
 
 // validateURL trims raw and verifies it is an http(s) URL with a host,

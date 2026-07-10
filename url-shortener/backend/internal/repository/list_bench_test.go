@@ -29,7 +29,7 @@ func newBenchRepo(b *testing.B, n int, withIndex bool) *SQLite {
 	if err != nil {
 		b.Fatalf("begin: %v", err)
 	}
-	stmt, err := tx.Prepare(`INSERT INTO links (code, url, visit_count, created_at) VALUES (?, ?, 0, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO links (code, url, created_at) VALUES (?, ?, ?)`)
 	if err != nil {
 		b.Fatalf("prepare: %v", err)
 	}

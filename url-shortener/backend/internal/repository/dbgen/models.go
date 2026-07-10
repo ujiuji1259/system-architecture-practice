@@ -5,8 +5,15 @@
 package dbgen
 
 type Link struct {
+	Code      string
+	Url       string
+	CreatedAt string
+}
+
+type LinkEvent struct {
+	ID         int64
 	Code       string
-	Url        string
-	VisitCount int64
-	CreatedAt  string
+	AccessedAt string
+	Referer    string
+	UserAgent  string
 }

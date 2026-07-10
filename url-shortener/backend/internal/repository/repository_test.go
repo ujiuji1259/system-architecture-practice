@@ -66,7 +66,7 @@ func TestGetMissingReturnsErrNotFound(t *testing.T) {
 	}
 }
 
-func TestGetAndCountVisit(t *testing.T) {
+func TestRecordVisitAndDerivedCount(t *testing.T) {
 	s := newTestRepo(t)
 	ctx := context.Background()
 
@@ -74,31 +74,64 @@ func TestGetAndCountVisit(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	for want := int64(1); want <= 3; want++ {
-		got, err := s.GetAndCountVisit(ctx, "hit")
+	for i := 1; i <= 3; i++ {
+		url, err := s.RecordVisit(ctx, "hit", Event{
+			Code: "hit", AccessedAt: time.Now(), Referer: "https://ref.example", UserAgent: "curl/8",
+		})
 		if err != nil {
-			t.Fatalf("GetAndCountVisit: %v", err)
+			t.Fatalf("RecordVisit: %v", err)
 		}
-		if got.VisitCount != want {
-			t.Errorf("visit %d: VisitCount = %d, want %d", want, got.VisitCount, want)
+		if url != "https://x.example" {
+			t.Errorf("url = %q, want target", url)
 		}
 	}
 
-	// Plain Get must reflect the accumulated count without changing it.
+	// visit_count is derived from the recorded events.
 	got, err := s.Get(ctx, "hit")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
 	if got.VisitCount != 3 {
-		t.Errorf("VisitCount after Get = %d, want 3", got.VisitCount)
+		t.Errorf("derived VisitCount = %d, want 3", got.VisitCount)
+	}
+
+	// Events are listed newest-first with their metadata.
+	events, total, err := s.ListEvents(ctx, "hit", 10, 0)
+	if err != nil {
+		t.Fatalf("ListEvents: %v", err)
+	}
+	if total != 3 || len(events) != 3 {
+		t.Fatalf("total=%d len=%d, want 3/3", total, len(events))
+	}
+	if events[0].Referer != "https://ref.example" || events[0].UserAgent != "curl/8" {
+		t.Errorf("event metadata = %+v, want referer/user-agent set", events[0])
 	}
 }
 
-func TestGetAndCountVisitMissing(t *testing.T) {
+func TestRecordVisitMissing(t *testing.T) {
 	s := newTestRepo(t)
-	_, err := s.GetAndCountVisit(context.Background(), "nope")
+	_, err := s.RecordVisit(context.Background(), "nope", Event{Code: "nope", AccessedAt: time.Now()})
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteCascadesEvents(t *testing.T) {
+	s := newTestRepo(t)
+	ctx := context.Background()
+
+	if err := s.Create(ctx, Link{Code: "c", URL: "https://c.example", CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := s.RecordVisit(ctx, "c", Event{Code: "c", AccessedAt: time.Now()}); err != nil {
+		t.Fatalf("RecordVisit: %v", err)
+	}
+	if err := s.Delete(ctx, "c"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	// After the link is gone, its events are gone too (ON DELETE CASCADE).
+	if _, total, err := s.ListEvents(ctx, "c", 10, 0); err != nil || total != 0 {
+		t.Errorf("events after delete: total=%d err=%v, want 0/nil", total, err)
 	}
 }
 

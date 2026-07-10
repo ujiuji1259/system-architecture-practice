@@ -104,11 +104,11 @@ func newRouter(svc *service.LinkService, baseURL string) http.Handler {
 }
 
 // redirectHandler resolves a short code to its target URL and 302-redirects,
-// incrementing the visit counter as a side effect.
+// recording an access event (referer + user-agent) as a side effect.
 func redirectHandler(svc *service.LinkService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := chi.URLParam(r, "code")
-		link, err := svc.Resolve(r.Context(), code)
+		url, err := svc.Resolve(r.Context(), code, r.Referer(), r.UserAgent())
 		if errors.Is(err, service.ErrNotFound) {
 			http.NotFound(w, r)
 			return
@@ -118,7 +118,7 @@ func redirectHandler(svc *service.LinkService) http.HandlerFunc {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		http.Redirect(w, r, link.URL, http.StatusFound)
+		http.Redirect(w, r, url, http.StatusFound)
 	}
 }
 

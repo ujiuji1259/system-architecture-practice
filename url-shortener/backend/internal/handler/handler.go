@@ -92,6 +92,35 @@ func (h *Handler) DeleteLink(ctx context.Context, request api.DeleteLinkRequestO
 	return api.DeleteLink204Response{}, nil
 }
 
+// ListLinkEvents handles GET /links/{code}/events.
+func (h *Handler) ListLinkEvents(ctx context.Context, request api.ListLinkEventsRequestObject) (api.ListLinkEventsResponseObject, error) {
+	limit := 20
+	if request.Params.Limit != nil {
+		limit = *request.Params.Limit
+	}
+	offset := 0
+	if request.Params.Offset != nil {
+		offset = *request.Params.Offset
+	}
+
+	events, total, err := h.svc.ListEvents(ctx, request.Code, limit, offset)
+	if errors.Is(err, service.ErrNotFound) {
+		return api.ListLinkEvents404JSONResponse(apiError("link not found")), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items := make([]api.Event, len(events))
+	for i, e := range events {
+		items[i] = api.Event{
+			AccessedAt: e.AccessedAt,
+			Referer:    e.Referer,
+			UserAgent:  e.UserAgent,
+		}
+	}
+	return api.ListLinkEvents200JSONResponse{Items: items, Total: total}, nil
+}
+
 // toAPI converts a domain link into the API representation.
 func (h *Handler) toAPI(l repository.Link) api.Link {
 	return api.Link{

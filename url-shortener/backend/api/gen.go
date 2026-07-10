@@ -37,6 +37,19 @@ type Error struct {
 	Message string  `json:"message"`
 }
 
+// Event defines model for Event.
+type Event struct {
+	AccessedAt time.Time `json:"accessed_at"`
+	Referer    string    `json:"referer"`
+	UserAgent  string    `json:"user_agent"`
+}
+
+// EventList defines model for EventList.
+type EventList struct {
+	Items []Event `json:"items"`
+	Total int64   `json:"total"`
+}
+
 // Link defines model for Link.
 type Link struct {
 	Code       string    `json:"code"`
@@ -58,6 +71,12 @@ type ListLinksParams struct {
 	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
 }
 
+// ListLinkEventsParams defines parameters for ListLinkEvents.
+type ListLinkEventsParams struct {
+	Limit  *int `form:"limit,omitempty" json:"limit,omitempty"`
+	Offset *int `form:"offset,omitempty" json:"offset,omitempty"`
+}
+
 // CreateLinkJSONRequestBody defines body for CreateLink for application/json ContentType.
 type CreateLinkJSONRequestBody = CreateLinkRequest
 
@@ -75,6 +94,9 @@ type ServerInterface interface {
 	// Get a short link by code
 	// (GET /links/{code})
 	GetLink(w http.ResponseWriter, r *http.Request, code string)
+	// List access events for a short link
+	// (GET /links/{code}/events)
+	ListLinkEvents(w http.ResponseWriter, r *http.Request, code string, params ListLinkEventsParams)
 }
 
 // Unimplemented server implementation that returns http.StatusNotImplemented for each endpoint.
@@ -102,6 +124,12 @@ func (_ Unimplemented) DeleteLink(w http.ResponseWriter, r *http.Request, code s
 // Get a short link by code
 // (GET /links/{code})
 func (_ Unimplemented) GetLink(w http.ResponseWriter, r *http.Request, code string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List access events for a short link
+// (GET /links/{code}/events)
+func (_ Unimplemented) ListLinkEvents(w http.ResponseWriter, r *http.Request, code string, params ListLinkEventsParams) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -217,6 +245,61 @@ func (siw *ServerInterfaceWrapper) GetLink(w http.ResponseWriter, r *http.Reques
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetLink(w, r, code)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListLinkEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListLinkEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "code" -------------
+	var code string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "code", chi.URLParam(r, "code"), &code, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "code", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListLinkEventsParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "offset" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "offset", r.URL.Query(), &params.Offset, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "offset"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "offset", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListLinkEvents(w, r, code, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -350,6 +433,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/links/{code}", wrapper.GetLink)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/links/{code}/events", wrapper.ListLinkEvents)
 	})
 
 	return r
@@ -493,6 +579,43 @@ func (response GetLink404JSONResponse) VisitGetLinkResponse(w http.ResponseWrite
 	return err
 }
 
+type ListLinkEventsRequestObject struct {
+	Code   string `json:"code"`
+	Params ListLinkEventsParams
+}
+
+type ListLinkEventsResponseObject interface {
+	VisitListLinkEventsResponse(w http.ResponseWriter) error
+}
+
+type ListLinkEvents200JSONResponse EventList
+
+func (response ListLinkEvents200JSONResponse) VisitListLinkEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListLinkEvents404JSONResponse Error
+
+func (response ListLinkEvents404JSONResponse) VisitListLinkEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// List short links
@@ -507,6 +630,9 @@ type StrictServerInterface interface {
 	// Get a short link by code
 	// (GET /links/{code})
 	GetLink(ctx context.Context, request GetLinkRequestObject) (GetLinkResponseObject, error)
+	// List access events for a short link
+	// (GET /links/{code}/events)
+	ListLinkEvents(ctx context.Context, request ListLinkEventsRequestObject) (ListLinkEventsResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -647,26 +773,55 @@ func (sh *strictHandler) GetLink(w http.ResponseWriter, r *http.Request, code st
 	}
 }
 
+// ListLinkEvents operation middleware
+func (sh *strictHandler) ListLinkEvents(w http.ResponseWriter, r *http.Request, code string, params ListLinkEventsParams) {
+	var request ListLinkEventsRequestObject
+
+	request.Code = code
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListLinkEvents(ctx, request.(ListLinkEventsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListLinkEvents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListLinkEventsResponseObject); ok {
+		if err := validResponse.VisitListLinkEventsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Base64 encoded, compressed with deflate, json marshaled OpenAPI spec.
 // Stored as a slice of fixed-width chunks rather than one concatenated
 // const string: with thousands of chunks the chained `+` fold is several
 // times slower for the Go compiler than parsing a slice literal.
 var swaggerSpec = []string{
-	"xFZNb+M2EP0rxHSPsqnERrHRLbstFgGCtti2hzZwDa40trkRP0KOjKiG/ntBUnEsS2l7SLAnU/SQb+a9",
-	"meEcoDTKGo2aPBQH8OUOlYjLjw4F4a3U95/xoUFPYdM6Y9GRxGhSNp6MWotapiMV+tJJS9JoKODnuBA1",
-	"S2bM74wjVpoK5+xmw4ySRFhlzGhk0rMtanSCsJpDBvgolK0RClDtrJb6HjKwgghduPmvu+vZn2L2dz67",
-	"Ws9Wh0W2uOzeQQbU2nDEk5N6C10GjavHfv22Q1YbvWW/f75lZJJfqIewOyLrC877nXlpFPdGId+ja3k4",
-	"zq2gHWSwMU4JggIaJ8c+dBk4fGikwwqKu+jQ6mhkvnzFkoKjPzpn3ATBpsLwOwpMofdiO/XfGeCT4RRo",
-	"0PZlzGcuxIfF4x9XU/yWMUeqtYjJcWSiEoQzkgqnzkS6170yQ8ILzmtTinpnPBXv8/c5P0L/O8tHpV9f",
-	"wAz20ktal6bRNIBYXp6clZq+Xz6flppwi24kRyQ3eXvKxBBkwOtLwt3KqYqUhGq4eOdwAwV8x58LnfdV",
-	"zmMCdEcA4Zxo47chUQ8U/Z/hJdSnC8auB3upN2ZclNfMy0BrLMq+IqXeMo9uL0sMxUmSorLB4tdkgY5d",
-	"/3IT6EPn00X5/GKehyCMRS2shAIW83y+SA1kFznhoaPE1RYjiYFCETy5qaCAQO1ttAhnnFBI6DwUdweQ",
-	"AeKhQddCBlqo4E8tlQyiJVZTaBvR1ATFZZ6BEo9SNQqKizx8Sd1/TZE5DWA2G48vIJxemU9cuQoCeWu0",
-	"TwlymeepyDVhymdhbS3LGD3/6gOHhxOg/0qfmIZR13M9rdgiMxuWuA4WvlFKuLZnuH8P+r8zsMZPaPH8",
-	"CkFKNfT0wVTtqwUxfua6YVaTa7AbsXjxqixOMRj2Wd8IAj/LV1QuPTcToDd6L2pZMffERcC9envcj2lE",
-	"iJMEE7VDUbVMatZ4PEudpBcTJ+kTLVJN80PosF0qkRoJxxn1Q9w/ZtRA1eW4MSXzXoHl2zPxkyG2MY2u",
-	"zuJOfgziZl/aOE4F3yYb2Sek6TjzN8/eOGT1z8s35e0T0oukTTX3fijoW2//Xg+7wWkjPp++VhEd3f7p",
-	"0jiYABdW8v0FdKvunwAAAP//",
+	"7FdLj9s2EP4rxDRH2dSu3SLRbZMGwQLbB9L20C5cg5FGNhOR1JIjdx3D/70gKT9kyVkE8DaXnixRw3l8",
+	"883DG8iNqo1GTQ6yDbh8iUqExzcWBeGd1J/e40ODjvxhbU2NliQGkbxxZNRcVDJeKdDlVtYkjYYMfgkP",
+	"omJRjLmlscRyU+CY3ZbMKEmERcKMRiYdW6BGKwiLMSSAj0LVFUIGaj2qpP4ECdSCCK3X/Pf9zegvMfqc",
+	"jl7NR7PNJJlcb19AArSu/RVHVuoFbBNobNX36/clssroBfvj/R0jE/1C3TW7JKpdxnl7Ms6N4s4o5Cu0",
+	"a+6v81rQEhIojVWCIIPGyr4P2wQsPjTSYgHZfXBothcyHz5iTt7Rt9YaOwCwKdD/9gJT6JxYDH07MbgT",
+	"HDS6Qj2QVZHn6BwWcxE+7uMrBOGIpMIhpC2WaDGE0AdR4z9u3B5zYUnm1aCSxqGdi0Xr1UHPT+azrCrB",
+	"vx+nTyJ87P3BrY7us1jcySGWS0LVfXhhsYQMvuOH4uFt5fAI6nZvQlgr1uHdkKg6gEpNP0wPAUlNuEDb",
+	"iyia3SkYct4X6XnyHHAUryePf74aQj4Pxf51KQ91M29LrJv0jPPK5KJaGkfZy/Rlyvemv1wu+5K9fCUm",
+	"sJJO0jw3zQm/ptfJVyclgBu9PUaia6SD67nEXYJ0gQD/Jee8vNSl6XfXG+akhzV017a1Sr1gDu1K5ui7",
+	"LEkKmfUSv0UJtOzm11sPH1oXFaXjq3HqgzA1alFLyGAyTseTOAmWARPuR0N4WmAA0UMovCe3BWTgob0L",
+	"Ev6OFQoJrYPsfgPSm3ho0K4hAS2U96eSSvqkRVRjaKVoKoLsOk1AiUepGgXZVerfpG7fhsAcNmDK0uEZ",
+	"C8cq0wGVM58gVxvtIkGu0zQWuaa2X4q6rmQeoucfncdwc2ToKfoEGoa8nuazFgtkpmQRay/hGqWEXbcI",
+	"t4O9/ZxAbdxALg7rBESqoaPXplhfLIj+vrLtsppsg9seilcXRXEIQX/O2kbg8ZleMHNxbxgweqtXopIF",
+	"szssvN1Xz2/3Tdz1wkrIRGVRFGsmNWscnlAn5ouJI/oEiVjTfOM77DaWSIWEfUb9GM73jOpkddpvTFG8",
+	"zcD0+ZH42RArTaOLk7ijH5242Yd12Iu9b4ON7B3ScJzps7M3bMvtePmmuL1DOgvaUHNvl4K29bbzutsN",
+	"jhvx6VY5O6Uix9XuX9IXh83bKPb/xHlyS3565MRlnrXIf2sGhmHXcYmVxp50sGcio3cE7WqnNGzJwEUt",
+	"+eoKtrPtvwEAAP//",
 }
 
 // decodeSpec returns the embedded OpenAPI spec as raw JSON bytes,

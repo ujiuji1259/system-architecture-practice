@@ -9,6 +9,17 @@ import (
 	"context"
 )
 
+const countEvents = `-- name: CountEvents :one
+SELECT COUNT(*) FROM link_events WHERE code = ?
+`
+
+func (q *Queries) CountEvents(ctx context.Context, code string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countEvents, code)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countLinks = `-- name: CountLinks :one
 SELECT COUNT(*) FROM links
 `
@@ -20,44 +31,19 @@ func (q *Queries) CountLinks(ctx context.Context) (int64, error) {
 	return count, err
 }
 
-const countVisit = `-- name: CountVisit :one
-UPDATE links
-SET visit_count = visit_count + 1
-WHERE code = ?
-RETURNING code, url, visit_count, created_at
-`
-
-func (q *Queries) CountVisit(ctx context.Context, code string) (Link, error) {
-	row := q.db.QueryRowContext(ctx, countVisit, code)
-	var i Link
-	err := row.Scan(
-		&i.Code,
-		&i.Url,
-		&i.VisitCount,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createLink = `-- name: CreateLink :exec
-INSERT INTO links (code, url, visit_count, created_at)
-VALUES (?, ?, ?, ?)
+INSERT INTO links (code, url, created_at)
+VALUES (?, ?, ?)
 `
 
 type CreateLinkParams struct {
-	Code       string
-	Url        string
-	VisitCount int64
-	CreatedAt  string
+	Code      string
+	Url       string
+	CreatedAt string
 }
 
 func (q *Queries) CreateLink(ctx context.Context, arg CreateLinkParams) error {
-	_, err := q.db.ExecContext(ctx, createLink,
-		arg.Code,
-		arg.Url,
-		arg.VisitCount,
-		arg.CreatedAt,
-	)
+	_, err := q.db.ExecContext(ctx, createLink, arg.Code, arg.Url, arg.CreatedAt)
 	return err
 }
 
@@ -74,27 +60,112 @@ func (q *Queries) DeleteLink(ctx context.Context, code string) (int64, error) {
 }
 
 const getLink = `-- name: GetLink :one
-SELECT code, url, visit_count, created_at
-FROM links
-WHERE code = ?
+SELECT l.code, l.url, l.created_at,
+       (SELECT COUNT(*) FROM link_events e WHERE e.code = l.code) AS visit_count
+FROM links l
+WHERE l.code = ?
 `
 
-func (q *Queries) GetLink(ctx context.Context, code string) (Link, error) {
+type GetLinkRow struct {
+	Code       string
+	Url        string
+	CreatedAt  string
+	VisitCount int64
+}
+
+func (q *Queries) GetLink(ctx context.Context, code string) (GetLinkRow, error) {
 	row := q.db.QueryRowContext(ctx, getLink, code)
-	var i Link
+	var i GetLinkRow
 	err := row.Scan(
 		&i.Code,
 		&i.Url,
-		&i.VisitCount,
 		&i.CreatedAt,
+		&i.VisitCount,
 	)
 	return i, err
 }
 
+const getLinkURL = `-- name: GetLinkURL :one
+SELECT url FROM links WHERE code = ?
+`
+
+func (q *Queries) GetLinkURL(ctx context.Context, code string) (string, error) {
+	row := q.db.QueryRowContext(ctx, getLinkURL, code)
+	var url string
+	err := row.Scan(&url)
+	return url, err
+}
+
+const insertEvent = `-- name: InsertEvent :exec
+INSERT INTO link_events (code, accessed_at, referer, user_agent)
+VALUES (?, ?, ?, ?)
+`
+
+type InsertEventParams struct {
+	Code       string
+	AccessedAt string
+	Referer    string
+	UserAgent  string
+}
+
+func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error {
+	_, err := q.db.ExecContext(ctx, insertEvent,
+		arg.Code,
+		arg.AccessedAt,
+		arg.Referer,
+		arg.UserAgent,
+	)
+	return err
+}
+
+const listEvents = `-- name: ListEvents :many
+SELECT id, code, accessed_at, referer, user_agent
+FROM link_events
+WHERE code = ?
+ORDER BY accessed_at DESC
+LIMIT ? OFFSET ?
+`
+
+type ListEventsParams struct {
+	Code   string
+	Limit  int64
+	Offset int64
+}
+
+func (q *Queries) ListEvents(ctx context.Context, arg ListEventsParams) ([]LinkEvent, error) {
+	rows, err := q.db.QueryContext(ctx, listEvents, arg.Code, arg.Limit, arg.Offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LinkEvent{}
+	for rows.Next() {
+		var i LinkEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.AccessedAt,
+			&i.Referer,
+			&i.UserAgent,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLinks = `-- name: ListLinks :many
-SELECT code, url, visit_count, created_at
-FROM links
-ORDER BY created_at DESC
+SELECT l.code, l.url, l.created_at,
+       (SELECT COUNT(*) FROM link_events e WHERE e.code = l.code) AS visit_count
+FROM links l
+ORDER BY l.created_at DESC
 LIMIT ? OFFSET ?
 `
 
@@ -103,20 +174,27 @@ type ListLinksParams struct {
 	Offset int64
 }
 
-func (q *Queries) ListLinks(ctx context.Context, arg ListLinksParams) ([]Link, error) {
+type ListLinksRow struct {
+	Code       string
+	Url        string
+	CreatedAt  string
+	VisitCount int64
+}
+
+func (q *Queries) ListLinks(ctx context.Context, arg ListLinksParams) ([]ListLinksRow, error) {
 	rows, err := q.db.QueryContext(ctx, listLinks, arg.Limit, arg.Offset)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Link{}
+	items := []ListLinksRow{}
 	for rows.Next() {
-		var i Link
+		var i ListLinksRow
 		if err := rows.Scan(
 			&i.Code,
 			&i.Url,
-			&i.VisitCount,
 			&i.CreatedAt,
+			&i.VisitCount,
 		); err != nil {
 			return nil, err
 		}
