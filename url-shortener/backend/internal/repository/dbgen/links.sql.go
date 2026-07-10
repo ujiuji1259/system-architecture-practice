@@ -59,29 +59,14 @@ func (q *Queries) DeleteLink(ctx context.Context, code string) (int64, error) {
 	return result.RowsAffected()
 }
 
-const getLink = `-- name: GetLink :one
-SELECT l.code, l.url, l.created_at,
-       (SELECT COUNT(*) FROM link_events e WHERE e.code = l.code) AS visit_count
-FROM links l
-WHERE l.code = ?
+const getLinkMeta = `-- name: GetLinkMeta :one
+SELECT code, url, created_at FROM links WHERE code = ?
 `
 
-type GetLinkRow struct {
-	Code       string
-	Url        string
-	CreatedAt  string
-	VisitCount int64
-}
-
-func (q *Queries) GetLink(ctx context.Context, code string) (GetLinkRow, error) {
-	row := q.db.QueryRowContext(ctx, getLink, code)
-	var i GetLinkRow
-	err := row.Scan(
-		&i.Code,
-		&i.Url,
-		&i.CreatedAt,
-		&i.VisitCount,
-	)
+func (q *Queries) GetLinkMeta(ctx context.Context, code string) (Link, error) {
+	row := q.db.QueryRowContext(ctx, getLinkMeta, code)
+	var i Link
+	err := row.Scan(&i.Code, &i.Url, &i.CreatedAt)
 	return i, err
 }
 

@@ -22,7 +22,7 @@ const testBaseURL = "http://short.test"
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "it.db")
-	repo, err := repository.New(context.Background(), dsn)
+	repo, err := repository.New(context.Background(), dsn, repository.NewMemoryCache())
 	if err != nil {
 		t.Fatalf("repository.New: %v", err)
 	}

@@ -13,7 +13,7 @@ import (
 func newBenchRepo(b *testing.B, n int, withIndex bool) *SQLite {
 	b.Helper()
 	dsn := filepath.Join(b.TempDir(), "bench.db")
-	s, err := New(context.Background(), dsn)
+	s, err := New(context.Background(), dsn, NewMemoryCache())
 	if err != nil {
 		b.Fatalf("New: %v", err)
 	}

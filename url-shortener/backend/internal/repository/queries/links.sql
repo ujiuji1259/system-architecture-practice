@@ -2,14 +2,11 @@
 INSERT INTO links (code, url, created_at)
 VALUES (?, ?, ?);
 
--- name: GetLink :one
-SELECT l.code, l.url, l.created_at,
-       (SELECT COUNT(*) FROM link_events e WHERE e.code = l.code) AS visit_count
-FROM links l
-WHERE l.code = ?;
-
 -- name: GetLinkURL :one
 SELECT url FROM links WHERE code = ?;
+
+-- name: GetLinkMeta :one
+SELECT code, url, created_at FROM links WHERE code = ?;
 
 -- name: ListLinks :many
 SELECT l.code, l.url, l.created_at,

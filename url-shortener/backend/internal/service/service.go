@@ -33,7 +33,9 @@ var aliasPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{3,32}$`)
 // maxGenAttempts bounds retries when a generated code collides.
 const maxGenAttempts = 5
 
-// Repository is the persistence behavior the service depends on.
+// Repository is the persistence behavior the service depends on. How the visit
+// count is stored or cached is entirely the repository's concern; the service
+// just asks for a link and gets its count.
 type Repository interface {
 	Create(ctx context.Context, l repository.Link) error
 	Get(ctx context.Context, code string) (repository.Link, error)

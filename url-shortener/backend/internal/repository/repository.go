@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	sqlite "modernc.org/sqlite"
@@ -49,14 +50,21 @@ type Event struct {
 	UserAgent  string
 }
 
-// SQLite is a SQLite-backed repository built on sqlc-generated queries.
+// SQLite is a SQLite-backed repository built on sqlc-generated queries. The
+// event log is the source of truth; visit counts are served from a CountCache
+// (rebuilt from the log on a miss), which is an internal persistence concern.
 type SQLite struct {
-	db *sql.DB
-	q  *dbgen.Queries
+	db    *sql.DB
+	q     *dbgen.Queries
+	cache CountCache
 }
 
-// New opens (or creates) a SQLite database at dsn and applies the schema.
-func New(ctx context.Context, dsn string) (*SQLite, error) {
+// New opens (or creates) a SQLite database at dsn and applies the schema. cache
+// backs the visit counter; pass nil to use an in-process cache.
+func New(ctx context.Context, dsn string, cache CountCache) (*SQLite, error) {
+	if cache == nil {
+		cache = NewMemoryCache()
+	}
 	database, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
@@ -72,7 +80,7 @@ func New(ctx context.Context, dsn string) (*SQLite, error) {
 		_ = database.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	return &SQLite{db: database, q: dbgen.New(database)}, nil
+	return &SQLite{db: database, q: dbgen.New(database), cache: cache}, nil
 }
 
 // Close releases the underlying database handle.
@@ -95,16 +103,58 @@ func (s *SQLite) Create(ctx context.Context, l Link) error {
 	return nil
 }
 
-// Get returns the link for a code, or ErrNotFound.
+// Get returns the link for a code, or ErrNotFound. The visit count is served
+// from the cache (O(1)); on a miss it is rebuilt from the event log and cached.
 func (s *SQLite) Get(ctx context.Context, code string) (Link, error) {
-	row, err := s.q.GetLink(ctx, code)
+	link, err := s.getMeta(ctx, code)
+	if err != nil {
+		return Link{}, err
+	}
+	link.VisitCount, err = s.visitCount(ctx, code)
+	if err != nil {
+		return Link{}, err
+	}
+	return link, nil
+}
+
+// getMeta is an O(1) primary-key lookup of a link's fields (without the count).
+func (s *SQLite) getMeta(ctx context.Context, code string) (Link, error) {
+	row, err := s.q.GetLinkMeta(ctx, code)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Link{}, ErrNotFound
 	}
 	if err != nil {
-		return Link{}, fmt.Errorf("get link: %w", err)
+		return Link{}, fmt.Errorf("get link meta: %w", err)
 	}
-	return toLink(row.Code, row.Url, row.CreatedAt, row.VisitCount)
+	return toLink(row.Code, row.Url, row.CreatedAt, 0)
+}
+
+// visitCount returns the count from the cache, rebuilding it from the event log
+// (the source of truth) and warming the cache on a miss.
+func (s *SQLite) visitCount(ctx context.Context, code string) (int64, error) {
+	if n, ok, err := s.cache.Get(ctx, code); err != nil {
+		slog.Warn("count cache get failed", "code", code, "err", err)
+	} else if ok {
+		return n, nil
+	}
+	n, err := s.countEvents(ctx, code)
+	if err != nil {
+		return 0, err
+	}
+	if err := s.cache.Set(ctx, code, n); err != nil {
+		slog.Warn("count cache set failed", "code", code, "err", err)
+	}
+	return n, nil
+}
+
+// countEvents is the authoritative visit count: an O(N) COUNT over the event
+// log, used to (re)build the cache.
+func (s *SQLite) countEvents(ctx context.Context, code string) (int64, error) {
+	n, err := s.q.CountEvents(ctx, code)
+	if err != nil {
+		return 0, fmt.Errorf("count events: %w", err)
+	}
+	return n, nil
 }
 
 // List returns a page of links ordered by newest first, plus the total count.
@@ -132,7 +182,8 @@ func (s *SQLite) List(ctx context.Context, limit, offset int) ([]Link, int64, er
 }
 
 // Delete removes a link by code. It returns ErrNotFound if it did not exist.
-// Associated events are removed by the ON DELETE CASCADE constraint.
+// Associated events are removed by the ON DELETE CASCADE constraint, and the
+// cached count is evicted.
 func (s *SQLite) Delete(ctx context.Context, code string) error {
 	n, err := s.q.DeleteLink(ctx, code)
 	if err != nil {
@@ -140,6 +191,9 @@ func (s *SQLite) Delete(ctx context.Context, code string) error {
 	}
 	if n == 0 {
 		return ErrNotFound
+	}
+	if err := s.cache.Del(ctx, code); err != nil {
+		slog.Warn("count cache del failed", "code", code, "err", err)
 	}
 	return nil
 }
@@ -172,6 +226,11 @@ func (s *SQLite) RecordVisit(ctx context.Context, code string, ev Event) (string
 	}
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit: %w", err)
+	}
+	// The event is durably recorded; bump the cache best-effort. If the code is
+	// not cached this is a no-op and the count is rebuilt on the next read.
+	if err := s.cache.Incr(ctx, code); err != nil {
+		slog.Warn("count cache incr failed", "code", code, "err", err)
 	}
 	return url, nil
 }

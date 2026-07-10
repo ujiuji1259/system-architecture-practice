@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -14,10 +15,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/ujiuji1259/system-architecture-practice/url-shortener/backend/api"
 	"github.com/ujiuji1259/system-architecture-practice/url-shortener/backend/internal/handler"
 	"github.com/ujiuji1259/system-architecture-practice/url-shortener/backend/internal/repository"
+	"github.com/ujiuji1259/system-architecture-practice/url-shortener/backend/internal/rediscache"
 	"github.com/ujiuji1259/system-architecture-practice/url-shortener/backend/internal/service"
 )
 
@@ -30,9 +33,10 @@ func main() {
 
 func run() error {
 	var (
-		addr    = flag.String("addr", envOr("ADDR", ":8080"), "HTTP listen address")
-		dbPath  = flag.String("db", envOr("DB_PATH", "shortener.db"), "SQLite database path")
-		baseURL = flag.String("base-url", envOr("BASE_URL", "http://localhost:8080"), "public base URL for short links")
+		addr      = flag.String("addr", envOr("ADDR", ":8080"), "HTTP listen address")
+		dbPath    = flag.String("db", envOr("DB_PATH", "shortener.db"), "SQLite database path")
+		baseURL   = flag.String("base-url", envOr("BASE_URL", "http://localhost:8080"), "public base URL for short links")
+		redisAddr = flag.String("redis-addr", envOr("REDIS_ADDR", ""), "Redis address for the count cache; empty uses an in-memory cache")
 	)
 	flag.Parse()
 
@@ -42,13 +46,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	repo, err := repository.New(ctx, *dbPath)
+	// The count cache is a repository-layer detail; the service is unaware of it.
+	cache, closeCache, err := newCountCache(ctx, *redisAddr)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = repo.Close() }()
+	defer closeCache()
 
-	svc := service.New(repo)
+	store, err := repository.New(ctx, *dbPath, cache)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	svc := service.New(store)
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -120,6 +131,29 @@ func redirectHandler(svc *service.LinkService) http.HandlerFunc {
 		}
 		http.Redirect(w, r, url, http.StatusFound)
 	}
+}
+
+// cacheTTL bounds how long a Redis count entry lives before it is rebuilt from
+// the event log, giving a coarse periodic reconciliation.
+const cacheTTL = time.Hour
+
+// newCountCache builds the repository count cache. With an empty redisAddr it
+// uses an in-process cache; otherwise it connects to Redis (failing fast if it
+// is unreachable). The returned func releases any resources.
+func newCountCache(ctx context.Context, redisAddr string) (repository.CountCache, func(), error) {
+	if redisAddr == "" {
+		slog.Info("using in-memory count cache")
+		return repository.NewMemoryCache(), func() {}, nil
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		_ = rdb.Close()
+		return nil, nil, fmt.Errorf("connect redis at %s: %w", redisAddr, err)
+	}
+	slog.Info("using redis count cache", "addr", redisAddr)
+	return rediscache.New(rdb, cacheTTL), func() { _ = rdb.Close() }, nil
 }
 
 func envOr(key, fallback string) string {

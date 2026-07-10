@@ -16,11 +16,15 @@ ARG TARGETARCH=arm64
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
     go build -trimpath -ldflags="-s -w" -o /out/server ./cmd/server
 
+# Prepare a data dir owned by the nonroot user for the SQLite file.
+RUN mkdir /data
+
 # --- runtime stage --------------------------------------------------------
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /app
 
 COPY --from=build /out/server /app/server
+COPY --from=build --chown=nonroot:nonroot /data /data
 
 # SQLite file lives here; mount a volume for persistence.
 ENV DB_PATH=/data/shortener.db

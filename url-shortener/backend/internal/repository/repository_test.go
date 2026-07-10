@@ -11,7 +11,7 @@ import (
 func newTestRepo(t *testing.T) *SQLite {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "test.db")
-	s, err := New(context.Background(), dsn)
+	s, err := New(context.Background(), dsn, NewMemoryCache())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
