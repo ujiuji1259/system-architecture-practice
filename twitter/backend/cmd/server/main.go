@@ -24,10 +24,10 @@ import (
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/handler"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline/store"
-	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/rediscache"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/repository"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/service"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/snowflake"
+	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/tweetcache"
 )
 
 // tweetCacheTTL bounds how long a hydrated tweet body lives in Redis.
@@ -126,7 +126,7 @@ type eventBus interface {
 
 // deps bundles the swappable derived-data backends (Redis or in-memory).
 type deps struct {
-	tweetCache repository.TweetCache
+	tweetCache tweetcache.Cache
 	store      store.Store
 	bus        eventBus
 }
@@ -136,9 +136,9 @@ type deps struct {
 // Redis, failing fast if it is unreachable.
 func newDeps(ctx context.Context, redisAddr string, maxLen int, ttl time.Duration) (deps, func(), error) {
 	if redisAddr == "" {
-		slog.Info("using in-memory timeline, event bus and tweet cache")
+		slog.Info("using in-memory timeline store, event bus and tweet cache")
 		return deps{
-			tweetCache: repository.NewMemoryCache(),
+			tweetCache: tweetcache.NewMemory(),
 			store:      store.NewMemory(maxLen),
 			bus:        events.NewMemoryBus(0),
 		}, func() {}, nil
@@ -151,9 +151,9 @@ func newDeps(ctx context.Context, redisAddr string, maxLen int, ttl time.Duratio
 		_ = rdb.Close()
 		return deps{}, nil, fmt.Errorf("connect redis at %s: %w", redisAddr, err)
 	}
-	slog.Info("using redis timeline, event bus and tweet cache", "addr", redisAddr)
+	slog.Info("using redis timeline store, event bus and tweet cache", "addr", redisAddr)
 	return deps{
-		tweetCache: rediscache.New(rdb, tweetCacheTTL),
+		tweetCache: tweetcache.NewRedis(rdb, tweetCacheTTL),
 		store:      store.NewRedis(rdb, maxLen, ttl),
 		bus:        events.NewRedisBus(rdb, 0),
 	}, func() { _ = rdb.Close() }, nil

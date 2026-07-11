@@ -8,10 +8,31 @@ import (
 	"time"
 )
 
+// stubCache is a trivial tweetCache used in tests. The real in-memory and Redis
+// caches live in internal/tweetcache; importing them here would cycle.
+type stubCache struct{ m map[int64]Tweet }
+
+func (c *stubCache) GetMany(_ context.Context, ids []int64) (map[int64]Tweet, error) {
+	out := make(map[int64]Tweet, len(ids))
+	for _, id := range ids {
+		if t, ok := c.m[id]; ok {
+			out[id] = t
+		}
+	}
+	return out, nil
+}
+
+func (c *stubCache) SetMany(_ context.Context, tweets map[int64]Tweet) error {
+	for id, t := range tweets {
+		c.m[id] = t
+	}
+	return nil
+}
+
 func newRepo(t *testing.T) *SQLite {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "test.db")
-	repo, err := New(context.Background(), dsn, NewMemoryCache())
+	repo, err := New(context.Background(), dsn, &stubCache{m: map[int64]Tweet{}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

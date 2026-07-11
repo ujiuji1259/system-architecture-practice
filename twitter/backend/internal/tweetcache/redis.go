@@ -1,9 +1,4 @@
-// Package rediscache implements repository.TweetCache backed by Redis.
-//
-// Each tweet is stored as a JSON string under "tweet:{id}" with a TTL. Reads use
-// MGET so hydrating a whole timeline page is a single round trip; misses fall
-// back to SQLite in the repository, which then warms the cache.
-package rediscache
+package tweetcache
 
 import (
 	"context"
@@ -19,20 +14,22 @@ import (
 
 const keyPrefix = "tweet:"
 
-// Cache is a Redis-backed tweet-body cache.
-type Cache struct {
+// Redis is a Redis-backed Cache. Each tweet is stored as a JSON string under
+// "tweet:{id}" with a TTL; reads use MGET so hydrating a whole timeline page is
+// a single round trip.
+type Redis struct {
 	rdb *redis.Client
 	ttl time.Duration
 }
 
-var _ repository.TweetCache = (*Cache)(nil)
+var _ Cache = (*Redis)(nil)
 
-// New returns a Cache using rdb, writing entries with the given TTL.
-func New(rdb *redis.Client, ttl time.Duration) *Cache {
-	return &Cache{rdb: rdb, ttl: ttl}
+// NewRedis returns a Redis Cache using rdb, writing entries with the given TTL.
+func NewRedis(rdb *redis.Client, ttl time.Duration) *Redis {
+	return &Redis{rdb: rdb, ttl: ttl}
 }
 
-func (c *Cache) key(id int64) string {
+func (c *Redis) key(id int64) string {
 	return keyPrefix + strconv.FormatInt(id, 10)
 }
 
@@ -47,7 +44,7 @@ type cachedTweet struct {
 }
 
 // GetMany fetches the cached subset of ids in a single MGET.
-func (c *Cache) GetMany(ctx context.Context, ids []int64) (map[int64]repository.Tweet, error) {
+func (c *Redis) GetMany(ctx context.Context, ids []int64) (map[int64]repository.Tweet, error) {
 	if len(ids) == 0 {
 		return map[int64]repository.Tweet{}, nil
 	}
@@ -81,7 +78,7 @@ func (c *Cache) GetMany(ctx context.Context, ids []int64) (map[int64]repository.
 }
 
 // SetMany writes the given tweets in one pipeline, each with the configured TTL.
-func (c *Cache) SetMany(ctx context.Context, tweets map[int64]repository.Tweet) error {
+func (c *Redis) SetMany(ctx context.Context, tweets map[int64]repository.Tweet) error {
 	if len(tweets) == 0 {
 		return nil
 	}

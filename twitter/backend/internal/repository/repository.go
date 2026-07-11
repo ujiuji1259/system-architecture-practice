@@ -3,9 +3,10 @@
 // (this service is small enough that a codegen step would not pay for itself).
 //
 // The repository owns two derived-data conveniences: a denormalized
-// users.follower_count (so the celebrity check is O(1)) and an injected
-// TweetCache for read-side body hydration. Neither changes the fact that the
-// tables here are authoritative.
+// users.follower_count (so the celebrity check is O(1)) and an injected tweet
+// cache for read-side body hydration. The cache is taken through a structural
+// interface (tweetCache) so the concrete cache implementations live in
+// internal/tweetcache and this package stays independent of them.
 package repository
 
 import (
@@ -60,18 +61,24 @@ type Tweet struct {
 	CreatedAt    time.Time
 }
 
-// SQLite is a sqlx-backed repository. cache hydrates tweet bodies on the read
-// path; pass nil to use an in-process cache.
-type SQLite struct {
-	db    *sqlx.DB
-	cache TweetCache
+// tweetCache is the read-side cache repository consults before falling back to
+// SQLite. It is a structural interface so callers can pass any implementation
+// from internal/tweetcache without this package importing it.
+type tweetCache interface {
+	GetMany(ctx context.Context, ids []int64) (map[int64]Tweet, error)
+	SetMany(ctx context.Context, tweets map[int64]Tweet) error
 }
 
-// New opens (or creates) a SQLite database at dsn and applies the schema.
-func New(ctx context.Context, dsn string, cache TweetCache) (*SQLite, error) {
-	if cache == nil {
-		cache = NewMemoryCache()
-	}
+// SQLite is a sqlx-backed repository. cache hydrates tweet bodies on the read
+// path.
+type SQLite struct {
+	db    *sqlx.DB
+	cache tweetCache
+}
+
+// New opens (or creates) a SQLite database at dsn and applies the schema. The
+// caller supplies the tweet cache (see internal/tweetcache).
+func New(ctx context.Context, dsn string, cache tweetCache) (*SQLite, error) {
 	raw, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)

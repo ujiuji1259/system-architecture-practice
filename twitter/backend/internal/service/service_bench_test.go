@@ -13,6 +13,7 @@ import (
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/hometimeline/store"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/repository"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/snowflake"
+	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/tweetcache"
 )
 
 // BenchmarkHomeTimelineRead contrasts the two ways to build a home timeline as
@@ -60,7 +61,7 @@ func seedHome(b *testing.B, followees, tweetsPer int) (*repository.SQLite, *stor
 	b.Helper()
 	ctx := context.Background()
 	dsn := filepath.Join(b.TempDir(), "bench.db")
-	repo, err := repository.New(ctx, dsn, repository.NewMemoryCache())
+	repo, err := repository.New(ctx, dsn, tweetcache.NewMemory())
 	if err != nil {
 		b.Fatalf("repository.New: %v", err)
 	}
@@ -137,7 +138,7 @@ func seedByRatio(b *testing.B, followees, tweetsPer, celebPct int, threshold int
 	b.Helper()
 	ctx := context.Background()
 	dsn := filepath.Join(b.TempDir(), "ratio.db")
-	repo, err := repository.New(ctx, dsn, repository.NewMemoryCache())
+	repo, err := repository.New(ctx, dsn, tweetcache.NewMemory())
 	if err != nil {
 		b.Fatalf("repository.New: %v", err)
 	}

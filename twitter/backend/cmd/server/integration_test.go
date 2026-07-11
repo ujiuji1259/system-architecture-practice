@@ -18,6 +18,7 @@ import (
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/repository"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/service"
 	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/snowflake"
+	"github.com/ujiuji1259/system-architecture-practice/twitter/backend/internal/tweetcache"
 )
 
 // newTestServer wires the full stack (SQLite + in-memory timeline/queue/cache +
@@ -26,7 +27,7 @@ import (
 func newTestServer(t *testing.T, threshold int64) *httptest.Server {
 	t.Helper()
 	dsn := filepath.Join(t.TempDir(), "it.db")
-	repo, err := repository.New(context.Background(), dsn, repository.NewMemoryCache())
+	repo, err := repository.New(context.Background(), dsn, tweetcache.NewMemory())
 	if err != nil {
 		t.Fatalf("repository.New: %v", err)
 	}
